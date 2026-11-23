@@ -743,7 +743,7 @@ static void EcHandle(ALK_U8 clear)//旋钮处理
 {
 	static ALK_S8 EC_count[ALK_EC_NUM] = {0}; // 执行计数
 	static ALK_U8 EC_pulse[ALK_EC_NUM] = {0}; // 间隔标志
-	static ALK_S16 dial_angle = 0; // 轮盘转角
+	static ALK_S16 dial_angle[ALK_EC_NUM] = {0}; // 轮盘转角
 	ALK_S16 tool16 = 0; // 工具变量
 	ALK_U8 EC_flag = 0;//执行标志
 	
@@ -752,9 +752,10 @@ static void EcHandle(ALK_U8 clear)//旋钮处理
 	if(clear){ // 清除
 		for(i = 0; i < ALK_EC_NUM; i++){
 			EC_count[i] = ecValue[i]; // 直接完全跟进
-			EC_pulse[0] = 0;
+			EC_pulse[i] = 0;
+			dial_angle[i] = 0;
 		}
-		EC_flag = dial_angle = 0;
+		EC_flag = 0;
 		return;
 	}
 	
@@ -781,17 +782,17 @@ static void EcHandle(ALK_U8 clear)//旋钮处理
 			case 2:{ // Dial
 				if(EC_flag){
 					if(EC_pulse[i]){ // 分期发送
-						Dial_data[1] |= dial_angle << 1;
-						Dial_data[2] = dial_angle >> 7;
+						Dial_data[1] |= dial_angle[i] << 1;
+						Dial_data[2] = dial_angle[i] >> 7;
 					}
 					else{
 						if(CFG_E_KEY(i, 1) >= kv_orig_1 && CFG_E_KEY(i, 1) <= kv_orig_0
 						&& CFG_E_KEY(i, 2) >= kv_orig_1 && CFG_E_KEY(i, 2) <= kv_orig_0){ // 1~9以及0
 							// 转角 = 左旋键数字*10 + 右旋键数字 + 1
-							dial_angle = (CFG_E_KEY(i, 1) + 1 - kv_orig_1) % 10 * 10 + (CFG_E_KEY(i, 2) + 1 - kv_orig_1) % 10 + 1;
+							dial_angle[i] = (CFG_E_KEY(i, 1) + 1 - kv_orig_1) % 10 * 10 + (CFG_E_KEY(i, 2) + 1 - kv_orig_1) % 10 + 1;
 						}
-						else dial_angle = 10; // 默认10度
-						dial_angle *= (EC_flag * 2 - 3) * 10; // 乘以方向和分辨率
+						else dial_angle[i] = 10; // 默认10度
+						dial_angle[i] *= (EC_flag * 2 - 3) * 10; // 乘以方向和分辨率
 
 						// 1~5分期: ctrl none shift alt win
 						if(CFG_E_FUNC(i, 1) == 0x01) EC_pulse[i] = 1; // ctrl
@@ -800,8 +801,8 @@ static void EcHandle(ALK_U8 clear)//旋钮处理
 						else if(CFG_E_FUNC(i, 1) == 0x08) EC_pulse[i] = 5; // win
 						else EC_pulse[i] = 2; // none
 						
-						tool16 = dial_angle / EC_pulse[i] + dial_angle % EC_pulse[i]; // 第一次发送带上余数
-						dial_angle /= EC_pulse[i];
+						tool16 = dial_angle[i] / EC_pulse[i] + dial_angle[i] % EC_pulse[i]; // 第一次发送带上余数
+						dial_angle[i] /= EC_pulse[i];
 						
 						Dial_data[1] |= tool16 << 1;
 						Dial_data[2] = tool16 >> 7;

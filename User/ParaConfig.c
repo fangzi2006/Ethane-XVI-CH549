@@ -63,7 +63,7 @@ void AsyncHandle(uint8_t flag){//异步处理
 		LIGHT_DATA_CSC(sysCs);//更新灯效数据选择
 		KeyRGB(1);//键盘RGB控制清零
 	}
-	else if(ASYNC_FLAG_BUZZ){//蜂鸣器模式
+	else if(flag == ASYNC_FLAG_BUZZ){//蜂鸣器模式
 		ClearKeyRGB();//清除键盘RGB
 		WsWrite16();//灯写入
 		BuzzHandle();//蜂鸣器处理

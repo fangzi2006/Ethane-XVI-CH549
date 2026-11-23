@@ -22,7 +22,7 @@ ALK_U8C TURN_R90[16] = {12,	8,	4,	0,
 ALK_U8 KeyiRemap(ALK_U8 keyi, ALK_U8 oldDir, ALK_U8 newDir){ // 按键位置重映射
 	newDir = (newDir + 4 - oldDir) % 4; // 相对旧键盘方向
 	if(newDir == 1) return TURN_L90[keyi];
-	else if(newDir == 2) return 16 - keyi;
+	else if(newDir == 2) return 15 - keyi;
 	else if(newDir == 3) return TURN_R90[keyi];
 	return keyi; // 方向相同
 }

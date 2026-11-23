@@ -61,10 +61,17 @@ void AdcRead(void){//摇杆读取
 }
 
 void EcRead(void){ // 旋钮读取
-	ecValue[0] -= (CFG_E_DIR(0) * 2 - 1) * (int8_t)(EC1val); // 编码器计数读取
-	EC1val = 0; // 编码器清零
-	ecValue[1] -= (CFG_E_DIR(1) * 2 - 1) * (int8_t)(EC2val); // 编码器计数读取
-	EC2val = 0; // 编码器清零
+	int8_t val;
+	if(EC1val){
+		val = (int8_t)EC1val;
+		EC1val = 0; // 编码器清零
+		ecValue[0] -= (CFG_E_DIR(0) * 2 - 1) * val; // 编码器计数读取
+	}
+	if(EC2val){
+		val = (int8_t)EC2val;
+		EC2val = 0; // 编码器清零
+		ecValue[1] -= (CFG_E_DIR(1) * 2 - 1) * val; // 编码器计数读取
+	}
 
 	rkValue[0] = LIMIT(adcValue[0], ANA_MIN(0), ANA_MAX(0)); // 钳位
 	rkValue[1] = LIMIT(adcValue[1], ANA_MIN(1), ANA_MAX(1));
@@ -111,7 +118,7 @@ void KeyTurn(void){//按键旋转映射
 		for(i = 0; i < 16; i++) keyNow[i] = keyFlt[TURN_R90[i]];
 	}
 	else if(CFG_KB_DIR == 2){//旋转180度
-		for(i = 0; i < 16; i++) keyNow[i] = keyFlt[16 - i];
+		for(i = 0; i < 16; i++) keyNow[i] = keyFlt[15 - i];
 	}
 	else if(CFG_KB_DIR == 3){//左旋90度
 		for(i = 0; i < 16; i++) keyNow[i] = keyFlt[TURN_L90[i]];
@@ -170,7 +177,7 @@ void BuzzHandle(void){//蜂鸣器处理
 		KeyFilter(2);//滤波二阶段
 		KeyTurn();//按键旋转映射
 		
-		buzzVol += EC1val;//编码器1调节音量
+		buzzVol -= (int8_t)EC1val;//编码器1调节音量
 		EC1val = EC2val = 0;
 		if(buzzVol < 1){//最小音量
 			PWM_R = 255;//红灯指示
