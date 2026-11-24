@@ -1,8 +1,8 @@
 /*******************************************************************************
 * File Name          : main.c
 * Author             : Light&Electricity
-* Version            : V1.7.0.1
-* Date               : 2026/11/20
+* Version            : V1.7.1.0
+* Date               : 2026/11/24
 * Description        : Ethane-XVI
 ********************************************************************************/
 #include "CH549.H"
@@ -16,9 +16,9 @@
 
 #pragma  NOAREGS
 
-UINT8C FIRMWARE_VERSION[4] = {1,7,0,1}; // 固件版本
+UINT8C FIRMWARE_VERSION[4] = {1,7,1,0}; // 固件版本
 
-uint8_t asyncFlag = 0;//异步操作标志
+volatile uint8_t asyncFlag = 0;//异步操作标志
 
 static uint8_t reportSendTime = 0; // 报文发送时间
 static uint8_t All_if_send = 0; // 总发送标志

@@ -506,7 +506,11 @@ if(asyncFlag & 0x80){//若已经在接收状态 则接收数据包
 	}
 	UEP2_CTRL = UEP2_CTRL & ~MASK_UEP_T_RES | UEP_T_RES_ACK;//启动上传响应主机
 }
-else{//若未在接收状态 则监听各种命令
+else if(asyncFlag != 0){//主循环尚在处理上次异步操作(如Flash擦写),拒绝新命令以保护FlashBuf与asyncFlag
+	Buf[Offset+0] = 'R'; Buf[Offset+1] = 'B'; Buf[Offset+2] = 'S'; Buf[Offset+3] = 'Y';
+	UEP2_CTRL = UEP2_CTRL & ~MASK_UEP_T_RES | UEP_T_RES_ACK;//启动上传响应主机
+}
+else{//若未在接收状态且主循环空闲 则监听各种命令
 	Buf[Offset+0] = 'R'; Buf[Offset+1] = Buf[1]; Buf[Offset+2] = Buf[2]; Buf[Offset+3] = Buf[3];//预填入响应字节
 	if((Buf[0] == 'D' && Buf[1] == 'K' && Buf[2] == 'B' && Buf[3] == 'C' 
 		|| Buf[0] == 'D' && Buf[1] == 'L' && Buf[2] == 'T' && Buf[3] == 'C') 
@@ -600,6 +604,29 @@ else{//若未在接收状态 则监听各种命令
 	}
 	else if(Buf[0] == 'B' && Buf[1] == 'D' && Buf[2] == 'G' && Buf[3] == 'C'){//诊断数据读取命令
 		DiagGet(&Buf[Offset+4], 56);//诊断数据获取
+	}
+	else if(Buf[0] == 'B' && Buf[1] == 'C' && Buf[2] == 'S' && Buf[3] == 'I'){//当前生效配置槽位读取命令
+		Buf[Offset+4] = sysCs + '1';//返回'1'~'8'
+	}
+	else if(Buf[0] == 'B' && Buf[1] == 'R' && Buf[2] == 'K' && Buf[3] == 'C'){//键盘配置分块回读命令(32B/包,共16包)
+		if(Buf[4] >= '1' && Buf[4] <= '0' + ALK_CFG_NUM && Buf[5] < 16){
+			Buf[Offset+4] = Buf[4];
+			Buf[Offset+5] = Buf[5];
+			memcpy(&Buf[Offset+6], (PUINT8C)(CFG_ADDR_CSC(Buf[4] - '1') + ((UINT16X)Buf[5] << 5)), 32);
+		}
+		else{
+			Buf[Offset+4] = 0xFF;//参数越界拒绝标志
+		}
+	}
+	else if(Buf[0] == 'B' && Buf[1] == 'R' && Buf[2] == 'L' && Buf[3] == 'C'){//灯效配置分块回读命令(32B/包,共8包)
+		if(Buf[4] >= '1' && Buf[4] <= '0' + ALK_CFG_NUM && Buf[5] < 8){
+			Buf[Offset+4] = Buf[4];
+			Buf[Offset+5] = Buf[5];
+			memcpy(&Buf[Offset+6], (PUINT8C)(LIGHT_ADDR_CSC(Buf[4] - '1') + ((UINT16X)Buf[5] << 5)), 32);
+		}
+		else{
+			Buf[Offset+4] = 0xFF;//参数越界拒绝标志
+		}
 	}
 	else if(Buf[0] == 'B' && Buf[1] == 'R' && Buf[2] == 'S' && Buf[3] == 'T'){//软复位命令
 		memset(&Buf[Offset+4], ' ', 64 - 4);//后面全置为空格

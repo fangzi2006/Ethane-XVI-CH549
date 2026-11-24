@@ -1,4 +1,19 @@
-/.vscode
-/Project/Listings
-/Project/Output/*
-!/Project/Output/Ethane-XVI.hex
+# Editor & IDE
+/.vscode/
+*.bak
+*_uvopt.bak
+*_uvproj.bak
+
+# Keil uVision user/GUI/session state (not needed for builds)
+Project/*.uvopt
+Project/*.uvgui.*
+Project/*.21431
+Project/*.Administrator
+Project/*.scvd
+Project/JLinkLog.txt
+
+# Build outputs & release staging
+/Project/Listings/
+/Project/Output/
+/dist/
+*.log

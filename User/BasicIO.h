@@ -64,11 +64,14 @@
 #define ANA_MIN(i)		Adc_Set_Mid[8 + (i)]
 
 //时间监测 测试代码
+#ifdef ETHANE_DEBUG_PRINT
 #define TICK_SOURSE			((TH0 << 8) | TL0)
 #define TICK_START(t)		do{ tickStart = (t); }while(0)
 #define TICK_END(t)			do{ tickEnd = (t); tickDif = tickEnd - tickStart; }while(0)
 #define TICK_END_TH(t, th)	do{ tickEnd = (t) - tickStart; if(tickEnd > th) tickDif = tickEnd; }while(0)
 extern UINT16D tickStart, tickEnd, tickDif;
+extern uint8_t debugBuf[];
+#endif
 
 extern uint32_t Systime;//系统时间
 
@@ -82,8 +85,6 @@ extern bit EC1freq, EC2freq;
 extern uint16_t adcValue[];
 extern uint16_t Adc_Set_Mid[];
 extern UINT8D keyFltNum;//按键滤波参数
-
-extern uint8_t debugBuf[];
 
 
 void ArrayInit(void);//数组初始化

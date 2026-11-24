@@ -4,7 +4,9 @@
 
 uint32_t Systime = 0;//系统时间
 
+#ifdef ETHANE_DEBUG_PRINT
 uint8_t debugBuf[64];
+#endif
 
 UINT8D keyFltNum = 2;//按键滤波参数
 
@@ -269,6 +271,7 @@ static void MorseBuzz(void){ // 摩尔斯码蜂鸣器控制
 //FillReport()	909~991~1700(空~常态~全按)
 //SysRGB()		96~112~140(空~常态~切换)
 //KeyRGB(0)		1880~2308~3756~5426~10586(空~定色~流水~呼吸~变色)
+#ifdef ETHANE_DEBUG_PRINT
 UINT16D tickStart = 0, tickEnd = 0, tickDif = 0; // 时间监测
 
 static void PrintTest(void){ // 打印输出
@@ -283,6 +286,7 @@ static void PrintTest(void){ // 打印输出
 	}
 //	mDelaymS(10);
 }
+#endif
 
 void MultiFunc(void){ // 功能集合函数
 	// PrintTest(); // 测试代码

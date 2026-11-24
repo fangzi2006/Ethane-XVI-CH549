@@ -1,0 +1,17 @@
+* text=auto
+
+# C/H sources & Keil XML project: normalize to LF in repo, native on checkout
+*.c text
+*.h text
+*.C text
+*.H text
+*.INC text
+*.uvproj text eol=crlf
+*.ps1 text eol=crlf
+*.md text eol=lf
+
+# Binary files
+*.hex binary
+*.bin binary
+*.obj binary
+*.lib binary
