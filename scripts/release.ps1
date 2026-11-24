@@ -138,8 +138,9 @@ try {
         throw "Target version V$fwVersion must be strictly greater than latest released tag v$($maxExisting.Text). Use -Bump or a higher -Version."
     }
 
-    if ((Test-Path -LiteralPath $distDir) -and -not $Force) {
-        throw "Release package directory already exists: $distDir. Bump the version to keep releases unique, or pass -Force to overwrite an untagged local package."
+    $releaseNotesMarker = Join-Path $distDir 'RELEASE_NOTES.md'
+    if ((Test-Path -LiteralPath $releaseNotesMarker) -and -not $Force) {
+        throw "Release package already exists: $distDir. Bump the version to keep releases unique, or pass -Force to overwrite an untagged local package."
     }
 
     # 3. Check Git working tree before modifying User/main.c

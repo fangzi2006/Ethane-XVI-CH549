@@ -39,47 +39,101 @@ Ethane-XVI-CH549/
 - PowerShell 5.1 或 PowerShell 7+
 - 烧录工具：**WCHISPTool**
 
-构建脚本会自动探测常见 Keil 安装路径（`D:\Keil\UV4\UV4.exe`、`C:\Keil_v5\UV4\UV4.exe` 等），也可通过环境变量 `$env:KEIL_UV4` 或 `-Uv4Path` 指定。
+脚本会自动探测常见 Keil 安装路径（`D:\Keil\UV4\UV4.exe`、`C:\Keil_v5\UV4\UV4.exe`、`C:\Keil\UV4\UV4.exe` 等）；如安装在其他路径，可通过环境变量 `$env:KEIL_UV4` 或 `-Uv4Path` 参数指定。
 
-### 本地一键构建
+> 所有脚本均在仓库根目录（`Ethane-XVI-CH549/`）下执行。若 PowerShell 提示禁止运行脚本，可加 `powershell -ExecutionPolicy Bypass -File .\scripts\build.ps1`。
+
+---
+
+### 1. 日常编译脚本：`scripts/build.ps1`
+
+用于日常开发编译固件。每次编译完成后会自动：
+1. 调用 Keil `UV4.exe` 无头编译；
+2. 解析 `Project/Listings/Ethane-XVI.map`，校验 CH549 硬件内存边界（`CODE+CONST < 0xD800`、`XDATA` 不越过 `0x0440` 且 `<= 0x07FF`、`DATA < 128B`）；
+3. 自动将带版本号的固件与校验文件复制到 `dist/vX.Y.Z.W/`：
+   - `dist/vX.Y.Z.W/Ethane-XVI-CH549-vX.Y.Z.W.hex`
+   - `dist/vX.Y.Z.W/SHA256SUMS.txt`
+
+#### 常用命令
 
 ```powershell
-# 增量编译 + 硬件内存边界检查
+# 增量编译（默认：编译 + 边界校验 + 复制产物到 dist/vX.Y.Z.W/）
 .\scripts\build.ps1
 
-# 清理后全量重编
+# 清理后全量重编（推荐在改头文件或发版前使用）
 .\scripts\build.ps1 -Rebuild -Clean
+
+# 仅编译到 Project/Output/Ethane-XVI.hex，不复制到 dist/
+.\scripts\build.ps1 -NoDist
+
+# 手动指定 Keil UV4.exe 路径
+.\scripts\build.ps1 -Uv4Path "C:\Keil_v5\UV4\UV4.exe"
 ```
 
-构建脚本会在编译完成后自动解析 `Project/Listings/Ethane-XVI.map`，校验：
-1. `CODE + CONST` 最高地址 `< 0xD800`（防止侵入诊断/配置 Flash 区）
-2. 链接器分配的 `XDATA` 不越过 `0x0440`（防止覆盖 USB EP0/EP4 缓冲区），且全部 `XDATA <= 0x07FF`（CH549 2KB XRAM 上限）
-3. `DATA` 使用量留足栈空间
+#### 参数说明
 
-产物位置：`Project/Output/Ethane-XVI.hex`（不纳入 Git 追踪）。
+| 参数 | 说明 |
+| --- | --- |
+| `-Rebuild` | 全量重新编译所有源文件（对应 Keil `-r`）；不传时为增量编译（`-b`） |
+| `-Clean` | 编译前先清空 `Project/Output/` 和 `Project/Listings/` |
+| `-AllowWarnings` | 允许编译存在 Warning（默认有警告也视为失败，强制零警告） |
+| `-NoDist` | 不复制产物到 `dist/vX.Y.Z.W/` |
+| `-Uv4Path <路径>` | 手动指定 `UV4.exe` 路径 |
 
-### 本地打包与发版
+---
 
-版本号以 `User/main.c` 中的 `FIRMWARE_VERSION[4]`（4 段 `0~255`）为单一真源。`release.ps1` 会自动校验**本地 tag、远端 `origin` tag、以及 `dist/` 目录**，强制要求版本号全局唯一且严格大于历史最新 tag。
+### 2. 固件发布脚本：`scripts/release.ps1`
+
+用于正式发版打包与 Git Tag 管理。版本号以 `User/main.c` 中的 `FIRMWARE_VERSION[4]`（4 段 `0~255`）为单一真源，脚本内置**三层唯一性保护**：
+- 禁止复用任何**本地已有 Git tag**；
+- 禁止复用任何**远端 `origin` 已有 Git tag**；
+- 禁止小于或等于历史最新 tag（强制**单调递增**），且禁止静默覆盖已生成的正式发布包。
+
+#### 完整发版流程
 
 ```powershell
-# 方式 1：自动递增版本号（build / patch / minor / major）并打包、打 tag、推送
-.\scripts\release.ps1 -Bump build -Tag -Push    # 例：1.7.1.0 -> 1.7.1.1
-.\scripts\release.ps1 -Bump patch -Tag -Push    # 例：1.7.1.0 -> 1.7.2.0
+# 场景 A：已改好代码并提交，自动递增版本号并打包、打 tag、推送（最常用）
+.\scripts\release.ps1 -Bump build -Tag -Push    # 第4段+1，例如 1.7.1.0 -> 1.7.1.1
+.\scripts\release.ps1 -Bump patch -Tag -Push    # 第3段+1，例如 1.7.1.0 -> 1.7.2.0
+.\scripts\release.ps1 -Bump minor -Tag -Push    # 第2段+1，例如 1.7.1.0 -> 1.8.0.0
+.\scripts\release.ps1 -Bump major -Tag -Push    # 第1段+1，例如 1.7.1.0 -> 2.0.0.0
 
-# 方式 2：显式指定新版本号
+# 场景 B：显式指定一个新版本号并打包、打 tag、推送
 .\scripts\release.ps1 -Version 1.7.2.0 -Tag -Push
 
-# 方式 3：已手动改好 User/main.c 中的版本号并提交，直接打包发版
+# 场景 C：已经手动改好 User/main.c 版本号并提交，直接基于当前版本号发版
 .\scripts\release.ps1 -Tag -Push
 
-# 仅本地验证打包（不打 tag；若该版本尚未打 tag 且需重打覆盖，可加 -Force）
-.\scripts\release.ps1 -Force
+# 场景 D：仅在本地打包预览（不打 tag、不推送）
+.\scripts\release.ps1
 ```
-4. 前往 GitHub Releases 新建对应 tag 的 Release，上传 `dist/vX.Y.Z.W/` 中的：
-   - `Ethane-XVI-CH549-vX.Y.Z.W.hex`
-   - `SHA256SUMS.txt`
-   - 并将 `RELEASE_NOTES.md` 内容直接粘贴为发布说明。
+
+#### 参数说明
+
+| 参数 | 说明 |
+| --- | --- |
+| `-Bump <build\|patch\|minor\|major>` | 自动递增 `User/main.c` 中的版本号与日期；配合 `-Tag` 时会自动提交版本变更 |
+| `-Version <A.B.C.D>` | 显式指定 4 段版本号（每段 `0~255`），与 `-Bump` 二选一 |
+| `-Tag` | 打包完成后自动创建 Git annotated tag（`vA.B.C.D`） |
+| `-Push` | 自动包含 `-Tag`，并将当前分支与新 tag 推送至 `origin` |
+| `-Force` | 仅允许覆盖**尚未打 tag** 的本地 `dist/vX.Y.Z.W/` 正式包（无法绕过 Git tag 唯一性拦截） |
+| `-AllowDirty` | 允许工作区有未提交改动时强行打 tag（不推荐用于正式发版） |
+| `-SkipRemoteCheck` | 离线时跳过 `git ls-remote` 远端 tag 检查 |
+| `-Uv4Path <路径>` | 透传给 `build.ps1` 的 `UV4.exe` 路径 |
+
+#### 发布产物目录（`dist/vX.Y.Z.W/`）
+
+执行完成后，所有可发布文件都会按版本号归档在 `dist/vX.Y.Z.W/`（该目录已在 `.gitignore` 中忽略，不会污染 Git）：
+
+```text
+dist/
+└── v1.7.1.0/
+    ├── Ethane-XVI-CH549-v1.7.1.0.hex   # 可直接用 WCHISPTool 烧录的固件
+    ├── SHA256SUMS.txt                  # 固件 SHA-256 校验值
+    └── RELEASE_NOTES.md                # 自动生成的发布说明（含 commit、资源占用、烧录步骤）
+```
+
+最后前往 GitHub Releases 新建对应 tag 的 Release，上传 `Ethane-XVI-CH549-vX.Y.Z.W.hex` 与 `SHA256SUMS.txt`，并将 `RELEASE_NOTES.md` 的内容粘贴为发布说明即可。
 
 ---
 

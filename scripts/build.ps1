@@ -1,15 +1,18 @@
 <#
 .SYNOPSIS
-    Headless Keil C51 build script for Ethane-XVI-CH549 with hardware memory-boundary checks.
+    Headless Keil C51 build script for Ethane-XVI-CH549 with hardware memory-boundary checks
+    and automatic versioned output to dist/vX.Y.Z.W/.
 .EXAMPLE
     .\scripts\build.ps1
     .\scripts\build.ps1 -Rebuild -Clean
+    .\scripts\build.ps1 -NoDist
 #>
 [CmdletBinding()]
 param(
     [switch]$Rebuild,
     [switch]$Clean,
     [switch]$AllowWarnings,
+    [switch]$NoDist,
     [string]$Uv4Path
 )
 
@@ -183,9 +186,26 @@ if ($errors.Count -gt 0) {
 
 Write-Host "`nBuild & boundary checks PASSED." -ForegroundColor Green
 
+$tagName     = "v$fwVersion"
+$distDir     = Join-Path $repoRoot "dist\$tagName"
+$hexFileName = "Ethane-XVI-CH549-$tagName.hex"
+$distHexPath = Join-Path $distDir $hexFileName
+
+if (-not $NoDist) {
+    New-Item -ItemType Directory -Path $distDir -Force | Out-Null
+    Copy-Item -LiteralPath $hexPath -Destination $distHexPath -Force
+    $checksumPath = Join-Path $distDir 'SHA256SUMS.txt'
+    "$hexHash  $hexFileName" | Set-Content -LiteralPath $checksumPath -Encoding ASCII
+    Write-Host "Dist Output: $distHexPath" -ForegroundColor Cyan
+}
+
 [PSCustomObject]@{
     Version            = $fwVersion
+    TagName            = $tagName
     HexPath            = $hexPath
+    DistDir            = $distDir
+    DistHexPath        = $distHexPath
+    HexFileName        = $hexFileName
     HexSize            = $hexInfo.Length
     Sha256             = $hexHash
     DataUsed           = $dataUsed
