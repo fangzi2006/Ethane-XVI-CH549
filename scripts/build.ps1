@@ -35,28 +35,87 @@ $mapPath    = Join-Path $listDir 'Ethane-XVI.map'
 $logPath    = Join-Path $outputDir 'build.log'
 $mainCPath  = Join-Path $repoRoot 'User\main.c'
 
+function Test-KeilC51Uv4 {
+    param([string]$CandidateUv4)
+    if (-not $CandidateUv4 -or -not (Test-Path -LiteralPath $CandidateUv4)) {
+        return $false
+    }
+    $uv4Dir   = Split-Path -Parent $CandidateUv4
+    $keilRoot = Split-Path -Parent $uv4Dir
+    $c51Exe   = Join-Path $keilRoot 'C51\BIN\C51.exe'
+    return (Test-Path -LiteralPath $c51Exe)
+}
+
 function Find-Uv4 {
     param([string]$ExplicitPath)
-    $candidates = @()
-    if ($ExplicitPath) { $candidates += $ExplicitPath }
-    if ($env:KEIL_UV4) { $candidates += $env:KEIL_UV4 }
-    $candidates += @(
-        'D:\Keil\UV4\UV4.exe',
-        'C:\Keil_v5\UV4\UV4.exe',
-        'C:\Keil\UV4\UV4.exe',
-        'D:\Keil_v5\UV4\UV4.exe'
-    )
-    foreach ($p in $candidates) {
-        if ($p -and (Test-Path -LiteralPath $p)) {
-            return (Resolve-Path -LiteralPath $p).Path
+
+    # 1. Explicit parameter or environment variable
+    foreach ($direct in @($ExplicitPath, $env:KEIL_UV4)) {
+        if ($direct) {
+            if (-not (Test-Path -LiteralPath $direct)) {
+                throw "Specified Keil UV4.exe not found: $direct"
+            }
+            $resolved = (Resolve-Path -LiteralPath $direct).Path
+            if (-not (Test-KeilC51Uv4 $resolved)) {
+                Write-Warning "Found UV4.exe at '$resolved', but C51\BIN\C51.exe was not detected next to it."
+            }
+            return $resolved
         }
     }
-    throw "Keil UV4.exe not found. Install Keil C51 or pass -Uv4Path / set `$env:KEIL_UV4."
+
+    $candidates = New-Object System.Collections.Generic.List[string]
+
+    # 2. PATH lookup
+    $cmd = Get-Command 'UV4.exe' -ErrorAction SilentlyContinue
+    if ($cmd -and $cmd.Source) { $candidates.Add($cmd.Source) }
+
+    # 3. Windows Registry lookup for Keil C51 (works regardless of custom install folder/drive)
+    $regKeys = @(
+        'HKLM:\SOFTWARE\WOW6432Node\Keil\Products\C51',
+        'HKLM:\SOFTWARE\Keil\Products\C51',
+        'HKCU:\SOFTWARE\Keil\Products\C51'
+    )
+    foreach ($rk in $regKeys) {
+        $prop = Get-ItemProperty -Path $rk -Name 'Path' -ErrorAction SilentlyContinue
+        if ($prop -and $prop.Path) {
+            $keilRoot = Split-Path -Parent $prop.Path.TrimEnd('\')
+            $candidates.Add((Join-Path $keilRoot 'UV4\UV4.exe'))
+        }
+    }
+
+    # 4. Common install paths across all available local drives
+    $drives = @(Get-PSDrive -PSProvider FileSystem -ErrorAction SilentlyContinue |
+        Where-Object { $_.Root -match '^[A-Z]:\\$' } |
+        Select-Object -ExpandProperty Root)
+    foreach ($drv in $drives) {
+        foreach ($sub in @('Keil_v5\UV4\UV4.exe', 'Keil\UV4\UV4.exe', 'Keil_C51\UV4\UV4.exe', 'Program Files (x86)\Keil_v5\UV4\UV4.exe', 'Program Files\Keil_v5\UV4\UV4.exe')) {
+            $candidates.Add((Join-Path $drv $sub))
+        }
+    }
+
+    # Prefer a UV4.exe that has Keil C51 installed alongside it
+    $fallback = $null
+    foreach ($p in ($candidates | Select-Object -Unique)) {
+        if (Test-Path -LiteralPath $p) {
+            $resolved = (Resolve-Path -LiteralPath $p).Path
+            if (Test-KeilC51Uv4 $resolved) {
+                return $resolved
+            }
+            if (-not $fallback) { $fallback = $resolved }
+        }
+    }
+
+    if ($fallback) {
+        Write-Warning "Found UV4.exe at '$fallback', but C51\BIN\C51.exe was not detected. Make sure Keil C51 is installed."
+        return $fallback
+    }
+
+    throw "Keil C51 (UV4.exe) not found. Install Keil C51 or pass -Uv4Path / set `$env:KEIL_UV4."
 }
 
 function Get-FirmwareVersion {
     param([string]$FilePath)
-    $content = Get-Content -LiteralPath $FilePath -Raw
+    $content = [System.IO.File]::ReadAllText($FilePath, [System.Text.UTF8Encoding]::new($false))
     $m = [regex]::Match($content, 'FIRMWARE_VERSION\[4\]\s*=\s*\{\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\}')
     if (-not $m.Success) {
         throw "Unable to parse FIRMWARE_VERSION[4] from $FilePath"
@@ -74,13 +133,13 @@ Write-Host "Mode             : $(if ($Rebuild) { 'Rebuild (-r)' } else { 'Increm
 
 if ($Clean) {
     Write-Host "Cleaning Output and Listings..."
-    if (Test-Path $outputDir) { Get-ChildItem -LiteralPath $outputDir -Force | Remove-Item -Recurse -Force }
-    if (Test-Path $listDir)   { Get-ChildItem -LiteralPath $listDir   -Force | Remove-Item -Recurse -Force }
+    if (Test-Path -LiteralPath $outputDir) { Get-ChildItem -LiteralPath $outputDir -Force | Remove-Item -Recurse -Force }
+    if (Test-Path -LiteralPath $listDir)   { Get-ChildItem -LiteralPath $listDir   -Force | Remove-Item -Recurse -Force }
 }
 
 New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
 New-Item -ItemType Directory -Path $listDir   -Force | Out-Null
-if (Test-Path $logPath) { Remove-Item -LiteralPath $logPath -Force }
+if (Test-Path -LiteralPath $logPath) { Remove-Item -LiteralPath $logPath -Force }
 
 $buildFlag = if ($Rebuild) { '-r' } else { '-b' }
 $uv4Args = @($buildFlag, "`"$uvprojPath`"", '-t', 'ETH', '-j0', '-o', "`"$logPath`"")
@@ -88,7 +147,7 @@ $uv4Args = @($buildFlag, "`"$uvprojPath`"", '-t', 'ETH', '-j0', '-o', "`"$logPat
 $proc = Start-Process -FilePath $uv4 -ArgumentList $uv4Args -Wait -PassThru -NoNewWindow
 $exitCode = $proc.ExitCode
 
-if (Test-Path $logPath) {
+if (Test-Path -LiteralPath $logPath) {
     Write-Host "`n--- Keil Build Output ---" -ForegroundColor DarkGray
     Get-Content -LiteralPath $logPath | ForEach-Object { Write-Host $_ }
     Write-Host "-------------------------`n" -ForegroundColor DarkGray
@@ -116,10 +175,11 @@ if (-not $sizeLine) {
     throw "Failed to parse 'Program Size' from $mapPath"
 }
 
-$dataUsed  = [double]$sizeLine.Matches[0].Groups[1].Value
-$xdataUsed = [int]$sizeLine.Matches[0].Groups[2].Value
-$constUsed = [int]$sizeLine.Matches[0].Groups[3].Value
-$codeUsed  = [int]$sizeLine.Matches[0].Groups[4].Value
+$invCulture = [System.Globalization.CultureInfo]::InvariantCulture
+$dataUsed   = [double]::Parse($sizeLine.Matches[0].Groups[1].Value, $invCulture)
+$xdataUsed  = [int]::Parse($sizeLine.Matches[0].Groups[2].Value, $invCulture)
+$constUsed  = [int]::Parse($sizeLine.Matches[0].Groups[3].Value, $invCulture)
+$codeUsed   = [int]::Parse($sizeLine.Matches[0].Groups[4].Value, $invCulture)
 
 # Scan exact segment end addresses for CODE/CONST and XDATA
 $maxCodeEnd = 0
@@ -150,12 +210,12 @@ foreach ($line in $mapLines) {
     }
 }
 
-$codeEndExclusive = $maxCodeEnd + 1
-$codeFree         = $CODE_LIMIT - $codeEndExclusive
+$codeEndExclusive   = $maxCodeEnd + 1
+$codeFree           = $CODE_LIMIT - $codeEndExclusive
 $xdataFreeBeforeEp0 = $XRAM_EP0_BASE - ($maxLinkerXdataEnd + 1)
-$xdataTotalFree   = $XRAM_LIMIT - $xdataUsed
-$hexInfo          = Get-Item -LiteralPath $hexPath
-$hexHash          = (Get-FileHash -LiteralPath $hexPath -Algorithm SHA256).Hash.ToLowerInvariant()
+$xdataTotalFree     = $XRAM_LIMIT - $xdataUsed
+$hexInfo            = Get-Item -LiteralPath $hexPath
+$hexHash            = (Get-FileHash -LiteralPath $hexPath -Algorithm SHA256).Hash.ToLowerInvariant()
 
 Write-Host "=== Hardware Resource Report ===" -ForegroundColor Cyan
 Write-Host ("CODE+CONST : {0,6} B (max 0x{1:X4} / limit 0x{2:X4}, free {3} B)" -f ($codeUsed + $constUsed), $maxCodeEnd, ($CODE_LIMIT - 1), $codeFree)

@@ -5,8 +5,8 @@
     1. Resolves target version from -Version, -Bump (major|minor|patch|build), or current User/main.c.
     2. Enforces version uniqueness & monotonicity against local Git tags, remote origin tags, and dist/.
     3. If -Version or -Bump is specified, updates User/main.c (FIRMWARE_VERSION, header Version & Date).
-    4. Runs a clean full rebuild via scripts/build.ps1 (with hardware boundary checks).
-    5. Stages versioned firmware artifacts, SHA256SUMS.txt, and RELEASE_NOTES.md in dist/vX.Y.Z.W/.
+    4. Runs a clean full rebuild via scripts/build.ps1 (with hardware boundary checks & dist staging).
+    5. Generates RELEASE_NOTES.md in dist/vX.Y.Z.W/.
     6. Optionally commits the version bump (when bumped) and creates/pushes an annotated Git tag vX.Y.Z.W.
 .EXAMPLE
     .\scripts\release.ps1
@@ -33,10 +33,23 @@ if ($Push) { $Tag = $true }
 if ($Version -and $Bump) {
     throw "Specify either -Version or -Bump, not both."
 }
+if (-not (Get-Command 'git' -ErrorAction SilentlyContinue)) {
+    throw "Git executable not found in PATH. Install Git for Windows and retry."
+}
 
 $repoRoot  = Split-Path -Parent $PSScriptRoot
 $mainCPath = Join-Path $repoRoot 'User\main.c'
 $buildPs1  = Join-Path $PSScriptRoot 'build.ps1'
+$utf8NoBom = [System.Text.UTF8Encoding]::new($false)
+
+function Invoke-GitChecked {
+    param([Parameter(Mandatory)][string[]]$Arguments)
+    $out = & git @Arguments
+    if ($LASTEXITCODE -ne 0) {
+        throw "git $($Arguments -join ' ') failed with exit code $LASTEXITCODE."
+    }
+    return $out
+}
 
 function Parse-Version4 {
     param([string]$Text)
@@ -66,8 +79,8 @@ function Parse-Version4 {
     }
 }
 
-# 1. Read current version from User/main.c
-$mainContent = Get-Content -LiteralPath $mainCPath -Raw
+# 1. Read current version from User/main.c (explicit UTF-8 to avoid PS 5.1 ANSI corruption)
+$mainContent = [System.IO.File]::ReadAllText($mainCPath, $utf8NoBom)
 $mVer = [regex]::Match($mainContent, 'FIRMWARE_VERSION\[4\]\s*=\s*\{\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\}')
 if (-not $mVer.Success) {
     throw "Unable to parse FIRMWARE_VERSION[4] from $mainCPath"
@@ -103,19 +116,24 @@ Push-Location $repoRoot
 try {
     # 2. Enforce strict version uniqueness & monotonicity across local tags, remote tags, and dist/
     $allTags = @()
-    $localTags = @(git tag -l 'v*' | Where-Object { $_ -and $_.Trim() -ne '' })
+    $localTags = @(Invoke-GitChecked @('tag', '-l', 'v*') | Where-Object { $_ -and $_.Trim() -ne '' })
     $allTags += $localTags
 
     if (-not $SkipRemoteCheck) {
-        try {
-            $remoteLines = @(git ls-remote --tags --refs origin 'refs/tags/v*' 2>$null)
+        $prevEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        $remoteLines = @(& git ls-remote --tags --refs origin 'refs/tags/v*' 2>$null)
+        $remoteExit  = $LASTEXITCODE
+        $ErrorActionPreference = $prevEap
+
+        if ($remoteExit -eq 0) {
             foreach ($line in $remoteLines) {
                 if ($line -match 'refs/tags/(v\S+)$') {
                     $allTags += $Matches[1]
                 }
             }
-        } catch {
-            Write-Warning "Could not query remote tags on 'origin' (offline?). Checking local tags only."
+        } else {
+            Write-Warning "Could not query remote tags on 'origin' (offline or no 'origin' remote?). Checking local tags only."
         }
     }
 
@@ -144,7 +162,7 @@ try {
     }
 
     # 3. Check Git working tree before modifying User/main.c
-    $gitStatus = @(git status --porcelain)
+    $gitStatus = @(Invoke-GitChecked @('status', '--porcelain'))
     $isDirty   = ($gitStatus.Count -gt 0)
     if ($isDirty) {
         if ($Tag -and -not $AllowDirty) {
@@ -175,38 +193,30 @@ try {
             "FIRMWARE_VERSION[4] = {$($targetVer.Major),$($targetVer.Minor),$($targetVer.Patch),$($targetVer.Build)}",
             1
         )
-        [System.IO.File]::WriteAllText($mainCPath, $updated, [System.Text.UTF8Encoding]::new($false))
+        [System.IO.File]::WriteAllText($mainCPath, $updated, $utf8NoBom)
         Write-Host "Updated User/main.c version: V$($currentVer.Text) -> V$fwVersion" -ForegroundColor Yellow
 
         if ($Tag -and -not $isDirty) {
-            git add User/main.c
-            git commit -m "Bump firmware version to V$fwVersion"
+            Invoke-GitChecked @('add', 'User/main.c') | Out-Null
+            Invoke-GitChecked @('commit', '-m', "Bump firmware version to V$fwVersion") | Out-Null
         } else {
             $isDirty = $true
         }
     }
 
-    $commitSha = (git rev-parse --short HEAD).Trim()
-    $branch    = (git rev-parse --abbrev-ref HEAD).Trim()
+    $commitSha = (Invoke-GitChecked @('rev-parse', '--short', 'HEAD') | Select-Object -First 1).Trim()
+    $branch    = (Invoke-GitChecked @('rev-parse', '--abbrev-ref', 'HEAD') | Select-Object -First 1).Trim()
 
-    # 5. Clean full rebuild
+    # 5. Clean full rebuild (build.ps1 automatically stages .hex and SHA256SUMS.txt into dist/vX.Y.Z.W/)
     $buildArgs = @{ Rebuild = $true; Clean = $true }
     if ($Uv4Path) { $buildArgs['Uv4Path'] = $Uv4Path }
     $buildResult = & $buildPs1 @buildArgs
 
-    # 6. Stage release artifacts in dist/vX.Y.Z.W/
-    New-Item -ItemType Directory -Path $distDir -Force | Out-Null
-
-    $hexFileName = "Ethane-XVI-CH549-$tagName.hex"
-    $destHexPath = Join-Path $distDir $hexFileName
-    Copy-Item -LiteralPath $buildResult.HexPath -Destination $destHexPath -Force
-
-    $checksumPath = Join-Path $distDir 'SHA256SUMS.txt'
-    "$($buildResult.Sha256)  $hexFileName" | Set-Content -LiteralPath $checksumPath -Encoding ASCII
-
-    $buildDate = Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'
-    $dirtyNote = if ($isDirty) { ' (dirty working tree)' } else { '' }
-    $notesPath = Join-Path $distDir 'RELEASE_NOTES.md'
+    # 6. Write RELEASE_NOTES.md alongside the staged artifacts
+    $hexFileName = $buildResult.HexFileName
+    $buildDate   = Get-Date -Format 'yyyy-MM-dd HH:mm:ss zzz'
+    $dirtyNote   = if ($isDirty) { ' (dirty working tree)' } else { '' }
+    $notesPath   = Join-Path $distDir 'RELEASE_NOTES.md'
     $notes = @"
 # Ethane-XVI-CH549 $tagName
 
@@ -235,15 +245,15 @@ try {
 2. Open **WCHISPTool**, select **CH549** -> **USB Download**.
 3. Load ``$hexFileName`` and flash.
 "@
-    $notes | Set-Content -LiteralPath $notesPath -Encoding UTF8
+    [System.IO.File]::WriteAllText($notesPath, $notes, $utf8NoBom)
 
     # 7. Optional Git tag & push
     if ($Tag) {
-        git tag -a $tagName -m "Release $tagName"
+        Invoke-GitChecked @('tag', '-a', $tagName, '-m', "Release $tagName") | Out-Null
         Write-Host "Created Git tag: $tagName" -ForegroundColor Green
         if ($Push) {
-            git push origin HEAD
-            git push origin $tagName
+            Invoke-GitChecked @('push', 'origin', 'HEAD') | Out-Null
+            Invoke-GitChecked @('push', 'origin', $tagName) | Out-Null
             Write-Host "Pushed branch '$branch' and tag '$tagName' to origin." -ForegroundColor Green
         }
     }
