@@ -1,21 +1,28 @@
 <#
 .SYNOPSIS
-    Local firmware release packager & Git tag helper for Ethane-XVI-CH549.
+    Local firmware release packager & Git tag helper for Ethane-XVI-CH549 with strict version uniqueness checks.
 .DESCRIPTION
-    1. Verifies version consistency in User/main.c (single source of truth).
-    2. Runs a clean full rebuild via scripts/build.ps1 (with hardware boundary checks).
-    3. Stages versioned firmware artifacts, SHA256SUMS.txt, and RELEASE_NOTES.md in dist/vX.Y.Z.W/.
-    4. Optionally creates and pushes an annotated Git tag vX.Y.Z.W.
+    1. Resolves target version from -Version, -Bump (major|minor|patch|build), or current User/main.c.
+    2. Enforces version uniqueness & monotonicity against local Git tags, remote origin tags, and dist/.
+    3. If -Version or -Bump is specified, updates User/main.c (FIRMWARE_VERSION, header Version & Date).
+    4. Runs a clean full rebuild via scripts/build.ps1 (with hardware boundary checks).
+    5. Stages versioned firmware artifacts, SHA256SUMS.txt, and RELEASE_NOTES.md in dist/vX.Y.Z.W/.
+    6. Optionally commits the version bump (when bumped) and creates/pushes an annotated Git tag vX.Y.Z.W.
 .EXAMPLE
     .\scripts\release.ps1
-    .\scripts\release.ps1 -Tag
-    .\scripts\release.ps1 -Tag -Push
+    .\scripts\release.ps1 -Bump build
+    .\scripts\release.ps1 -Version 1.7.2.0 -Tag -Push
 #>
 [CmdletBinding()]
 param(
+    [string]$Version,
+    [ValidateSet('major', 'minor', 'patch', 'build')]
+    [string]$Bump,
     [switch]$Tag,
     [switch]$Push,
     [switch]$AllowDirty,
+    [switch]$Force,
+    [switch]$SkipRemoteCheck,
     [string]$Uv4Path
 )
 
@@ -23,33 +30,121 @@ Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
 if ($Push) { $Tag = $true }
+if ($Version -and $Bump) {
+    throw "Specify either -Version or -Bump, not both."
+}
 
 $repoRoot  = Split-Path -Parent $PSScriptRoot
 $mainCPath = Join-Path $repoRoot 'User\main.c'
 $buildPs1  = Join-Path $PSScriptRoot 'build.ps1'
 
-# 1. Validate version consistency in User/main.c
+function Parse-Version4 {
+    param([string]$Text)
+    $clean = $Text.Trim().TrimStart('v', 'V')
+    $m = [regex]::Match($clean, '^(\d+)\.(\d+)\.(\d+)\.(\d+)$')
+    if (-not $m.Success) {
+        throw "Invalid version '$Text'. Expected 4-part format A.B.C.D (each 0..255)."
+    }
+    $parts = @(
+        [int]$m.Groups[1].Value,
+        [int]$m.Groups[2].Value,
+        [int]$m.Groups[3].Value,
+        [int]$m.Groups[4].Value
+    )
+    foreach ($p in $parts) {
+        if ($p -lt 0 -or $p -gt 255) {
+            throw "Version segment '$p' in '$clean' out of range (UINT8C requires 0..255)."
+        }
+    }
+    return [PSCustomObject]@{
+        Major = $parts[0]
+        Minor = $parts[1]
+        Patch = $parts[2]
+        Build = $parts[3]
+        Text  = "$($parts[0]).$($parts[1]).$($parts[2]).$($parts[3])"
+        Obj   = [version]::new($parts[0], $parts[1], $parts[2], $parts[3])
+    }
+}
+
+# 1. Read current version from User/main.c
 $mainContent = Get-Content -LiteralPath $mainCPath -Raw
 $mVer = [regex]::Match($mainContent, 'FIRMWARE_VERSION\[4\]\s*=\s*\{\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*,\s*(\d+)\s*\}')
 if (-not $mVer.Success) {
     throw "Unable to parse FIRMWARE_VERSION[4] from $mainCPath"
 }
-$fwVersion = "$($mVer.Groups[1].Value).$($mVer.Groups[2].Value).$($mVer.Groups[3].Value).$($mVer.Groups[4].Value)"
-$tagName   = "v$fwVersion"
+$currentVer = Parse-Version4 "$($mVer.Groups[1].Value).$($mVer.Groups[2].Value).$($mVer.Groups[3].Value).$($mVer.Groups[4].Value)"
 
-$mHeader = [regex]::Match($mainContent, '\*\s*Version\s*:\s*V([0-9.]+)')
-if ($mHeader.Success -and $mHeader.Groups[1].Value -ne $fwVersion) {
-    throw "Version mismatch in User/main.c: header says V$($mHeader.Groups[1].Value), FIRMWARE_VERSION says V$fwVersion."
+# Determine target version
+$targetVer = $currentVer
+$needsBumpWrite = $false
+if ($Version) {
+    $targetVer = Parse-Version4 $Version
+    $needsBumpWrite = ($targetVer.Text -ne $currentVer.Text)
+} elseif ($Bump) {
+    switch ($Bump) {
+        'major' { $targetVer = Parse-Version4 "$($currentVer.Major + 1).0.0.0" }
+        'minor' { $targetVer = Parse-Version4 "$($currentVer.Major).$($currentVer.Minor + 1).0.0" }
+        'patch' { $targetVer = Parse-Version4 "$($currentVer.Major).$($currentVer.Minor).$($currentVer.Patch + 1).0" }
+        'build' { $targetVer = Parse-Version4 "$($currentVer.Major).$($currentVer.Minor).$($currentVer.Patch).$($currentVer.Build + 1)" }
+    }
+    $needsBumpWrite = $true
+} else {
+    $mHeader = [regex]::Match($mainContent, '\*\s*Version\s*:\s*V([0-9.]+)')
+    if ($mHeader.Success -and $mHeader.Groups[1].Value -ne $currentVer.Text) {
+        throw "Version mismatch in User/main.c: header says V$($mHeader.Groups[1].Value), FIRMWARE_VERSION says V$($currentVer.Text)."
+    }
 }
 
-# 2. Check Git state
+$fwVersion = $targetVer.Text
+$tagName   = "v$fwVersion"
+$distDir   = Join-Path $repoRoot "dist\$tagName"
+
 Push-Location $repoRoot
 try {
+    # 2. Enforce strict version uniqueness & monotonicity across local tags, remote tags, and dist/
+    $allTags = @()
+    $localTags = @(git tag -l 'v*' | Where-Object { $_ -and $_.Trim() -ne '' })
+    $allTags += $localTags
+
+    if (-not $SkipRemoteCheck) {
+        try {
+            $remoteLines = @(git ls-remote --tags --refs origin 'refs/tags/v*' 2>$null)
+            foreach ($line in $remoteLines) {
+                if ($line -match 'refs/tags/(v\S+)$') {
+                    $allTags += $Matches[1]
+                }
+            }
+        } catch {
+            Write-Warning "Could not query remote tags on 'origin' (offline?). Checking local tags only."
+        }
+    }
+
+    $allTags = @($allTags | Sort-Object -Unique)
+
+    if ($allTags -contains $tagName) {
+        throw "Version '$tagName' already exists in Git tags! Version numbers must be unique. Use -Bump build|patch|minor|major or -Version X.Y.Z.W."
+    }
+
+    $maxExisting = $null
+    foreach ($t in $allTags) {
+        if ($t -match '^v(\d+\.\d+\.\d+\.\d+)$') {
+            $parsed = Parse-Version4 $Matches[1]
+            if (-not $maxExisting -or $parsed.Obj -gt $maxExisting.Obj) {
+                $maxExisting = $parsed
+            }
+        }
+    }
+    if ($maxExisting -and $targetVer.Obj -le $maxExisting.Obj) {
+        throw "Target version V$fwVersion must be strictly greater than latest released tag v$($maxExisting.Text). Use -Bump or a higher -Version."
+    }
+
+    if ((Test-Path -LiteralPath $distDir) -and -not $Force) {
+        throw "Release package directory already exists: $distDir. Bump the version to keep releases unique, or pass -Force to overwrite an untagged local package."
+    }
+
+    # 3. Check Git working tree before modifying User/main.c
     $gitStatus = @(git status --porcelain)
     $isDirty   = ($gitStatus.Count -gt 0)
-    $commitSha = (git rev-parse --short HEAD).Trim()
-    $branch    = (git rev-parse --abbrev-ref HEAD).Trim()
-
     if ($isDirty) {
         if ($Tag -and -not $AllowDirty) {
             throw "Working tree has uncommitted changes. Commit your changes before tagging, or pass -AllowDirty."
@@ -57,20 +152,48 @@ try {
         Write-Warning "Working tree has uncommitted changes; packaging current local tree."
     }
 
-    if ($Tag) {
-        $existingTag = git tag -l $tagName
-        if ($existingTag) {
-            throw "Git tag '$tagName' already exists. Bump FIRMWARE_VERSION in User/main.c first."
+    # 4. Update User/main.c if -Version or -Bump changed the version
+    if ($needsBumpWrite) {
+        $today = Get-Date -Format 'yyyy/MM/dd'
+        $updated = $mainContent
+        $updated = [regex]::Replace(
+            $updated,
+            '(\*\s*Version\s*:\s*V)[0-9.]+',
+            "`${1}$fwVersion",
+            1
+        )
+        $updated = [regex]::Replace(
+            $updated,
+            '(\*\s*Date\s*:\s*)[0-9/]+',
+            "`${1}$today",
+            1
+        )
+        $updated = [regex]::Replace(
+            $updated,
+            'FIRMWARE_VERSION\[4\]\s*=\s*\{\s*\d+\s*,\s*\d+\s*,\s*\d+\s*,\s*\d+\s*\}',
+            "FIRMWARE_VERSION[4] = {$($targetVer.Major),$($targetVer.Minor),$($targetVer.Patch),$($targetVer.Build)}",
+            1
+        )
+        [System.IO.File]::WriteAllText($mainCPath, $updated, [System.Text.UTF8Encoding]::new($false))
+        Write-Host "Updated User/main.c version: V$($currentVer.Text) -> V$fwVersion" -ForegroundColor Yellow
+
+        if ($Tag -and -not $isDirty) {
+            git add User/main.c
+            git commit -m "Bump firmware version to V$fwVersion"
+        } else {
+            $isDirty = $true
         }
     }
 
-    # 3. Clean full rebuild
+    $commitSha = (git rev-parse --short HEAD).Trim()
+    $branch    = (git rev-parse --abbrev-ref HEAD).Trim()
+
+    # 5. Clean full rebuild
     $buildArgs = @{ Rebuild = $true; Clean = $true }
     if ($Uv4Path) { $buildArgs['Uv4Path'] = $Uv4Path }
     $buildResult = & $buildPs1 @buildArgs
 
-    # 4. Stage release artifacts in dist/vX.Y.Z.W/
-    $distDir    = Join-Path $repoRoot "dist\$tagName"
+    # 6. Stage release artifacts in dist/vX.Y.Z.W/
     New-Item -ItemType Directory -Path $distDir -Force | Out-Null
 
     $hexFileName = "Ethane-XVI-CH549-$tagName.hex"
@@ -113,7 +236,7 @@ try {
 "@
     $notes | Set-Content -LiteralPath $notesPath -Encoding UTF8
 
-    # 5. Optional Git tag & push
+    # 7. Optional Git tag & push
     if ($Tag) {
         git tag -a $tagName -m "Release $tagName"
         Write-Host "Created Git tag: $tagName" -ForegroundColor Green

@@ -60,23 +60,22 @@ Ethane-XVI-CH549/
 
 ### 本地打包与发版
 
-1. 修改 `User/main.c` 中的 `FIRMWARE_VERSION[4]` 以及文件头 `Version` 注释，并更新 `CHANGELOG.md`。
-2. 提交所有源码修改：
-   ```powershell
-   git add -A
-   git commit -m "Release v1.7.1.0"
-   ```
-3. 执行发布脚本：
-   ```powershell
-   # 仅在本地打包到 dist/v1.7.1.0/（适合发版前验证）
-   .\scripts\release.ps1
+版本号以 `User/main.c` 中的 `FIRMWARE_VERSION[4]`（4 段 `0~255`）为单一真源。`release.ps1` 会自动校验**本地 tag、远端 `origin` tag、以及 `dist/` 目录**，强制要求版本号全局唯一且严格大于历史最新 tag。
 
-   # 打包并创建 Git annotated tag (v1.7.1.0)
-   .\scripts\release.ps1 -Tag
+```powershell
+# 方式 1：自动递增版本号（build / patch / minor / major）并打包、打 tag、推送
+.\scripts\release.ps1 -Bump build -Tag -Push    # 例：1.7.1.0 -> 1.7.1.1
+.\scripts\release.ps1 -Bump patch -Tag -Push    # 例：1.7.1.0 -> 1.7.2.0
 
-   # 打包、打 tag 并推送分支与 tag 到 origin
-   .\scripts\release.ps1 -Tag -Push
-   ```
+# 方式 2：显式指定新版本号
+.\scripts\release.ps1 -Version 1.7.2.0 -Tag -Push
+
+# 方式 3：已手动改好 User/main.c 中的版本号并提交，直接打包发版
+.\scripts\release.ps1 -Tag -Push
+
+# 仅本地验证打包（不打 tag；若该版本尚未打 tag 且需重打覆盖，可加 -Force）
+.\scripts\release.ps1 -Force
+```
 4. 前往 GitHub Releases 新建对应 tag 的 Release，上传 `dist/vX.Y.Z.W/` 中的：
    - `Ethane-XVI-CH549-vX.Y.Z.W.hex`
    - `SHA256SUMS.txt`
